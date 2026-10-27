@@ -1,0 +1,615 @@
+#PROGRAM 1: TIME SERIES FORECASTING USING SIMPLE RNN, LSTM AND GRU
+========================================================================
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from tensorflow.keras.utils import get_file
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Input, SimpleRNN, LSTM, GRU, Dense
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
+
+np.random.seed(42)
+
+url = "https://raw.githubusercontent.com/jbrownlee/Datasets/master/monthly-sunspots.csv"
+csv_path = get_file("monthly-sunspots.csv", origin=url, cache_subdir="datasets")
+
+df = pd.read_csv(csv_path)
+series = df.iloc[:, 1].to_numpy(dtype=np.float32).reshape(-1, 1)
+
+plt.figure(figsize=(10, 4))
+plt.plot(series)
+plt.title("Monthly Sunspots")
+plt.xlabel("Time")
+plt.ylabel("Sunspots")
+plt.tight_layout()
+plt.show()
+
+split = int(len(series) * 0.8)
+train_data, test_data = series[:split], series[split:]
+
+scaler = MinMaxScaler()
+train_scaled = scaler.fit_transform(train_data)
+
+LOOK_BACK = 12
+if len(train_data) <= LOOK_BACK:
+    raise ValueError("Not enough training observations for LOOK_BACK.")
+
+test_context = np.vstack([train_data[-LOOK_BACK:], test_data])
+test_scaled = scaler.transform(test_context)
+
+def create_dataset(data, look_back):
+    X, y = [], []
+    for i in range(len(data) - look_back):
+        X.append(data[i:i + look_back, 0])
+        y.append(data[i + look_back, 0])
+    return np.asarray(X, dtype=np.float32), np.asarray(y, dtype=np.float32)
+
+X_train, y_train = create_dataset(train_scaled, LOOK_BACK)
+X_test, y_test = create_dataset(test_scaled, LOOK_BACK)
+
+X_train = X_train.reshape(-1, LOOK_BACK, 1)
+X_test = X_test.reshape(-1, LOOK_BACK, 1)
+
+actual = scaler.inverse_transform(y_test.reshape(-1, 1))
+
+def train_model(model, name):
+    model.compile(optimizer="adam", loss="mse")
+    model.fit(X_train, y_train, epochs=30, batch_size=16, verbose=0)
+
+    pred_scaled = model.predict(X_test, verbose=0)
+    predictions = scaler.inverse_transform(pred_scaled)
+    rmse = np.sqrt(mean_squared_error(actual, predictions))
+    print(f"{name} RMSE: {rmse:.2f}")
+    return predictions, rmse
+
+def make_model(kind):
+    layers = [Input(shape=(LOOK_BACK, 1))]
+    if kind == "Simple RNN":
+        layers += [SimpleRNN(50, activation="tanh")]
+    elif kind == "LSTM":
+        layers += [LSTM(50, activation="tanh")]
+    elif kind == "GRU":
+        layers += [GRU(50, activation="tanh")]
+    layers += [Dense(1)]
+    return Sequential(layers)
+
+rnn_pred, rnn_rmse = train_model(make_model("Simple RNN"), "Simple RNN")
+lstm_pred, lstm_rmse = train_model(make_model("LSTM"), "LSTM")
+gru_pred, gru_rmse = train_model(make_model("GRU"), "GRU")
+
+plt.figure(figsize=(11, 5))
+plt.plot(actual, label="Actual")
+plt.plot(rnn_pred, label="Simple RNN")
+plt.plot(lstm_pred, label="LSTM")
+plt.plot(gru_pred, label="GRU")
+plt.title("RNN vs LSTM vs GRU Forecasting")
+plt.xlabel("Test time step")
+plt.ylabel("Sunspots")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+print("\\nRMSE Comparison")
+print(f"Simple RNN: {rnn_rmse:.2f}")
+print(f"LSTM:       {lstm_rmse:.2f}")
+print(f"GRU:        {gru_rmse:.2f}")
+
+----------------------------------------------------
+from google.colab import files
+import zipfile
+
+plots = [
+    "raw_series.png",
+    "simplernn_loss.png",
+    "lstm_loss.png",
+    "gru_loss.png",
+    "rnn_vs_lstm_forecast.png"
+]
+
+with zipfile.ZipFile("all_plots.zip", "w") as zipf:
+    for plot in plots:
+        zipf.write(plot)
+
+files.download("all_plots.zip")
+
+========================================================================
+PROGRAM 2: IMAGE CAPTION GENERATION USING CNN AND LSTM
+
+import random
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.datasets import fashion_mnist
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import (Input,Conv2D,MaxPooling2D,GlobalAveragePooling2D,Dense,Embedding,LSTM,Add,Dropout)
+
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+
+(x_train, y_train), (x_test, y_test) = fashion_mnist.load_data()
+
+print("Training images:", x_train.shape)
+print("Testing images :", x_test.shape)
+
+x_train = (x_train.astype("float32")[..., np.newaxis]/ 255.0)
+x_test = (x_test.astype("float32")[..., np.newaxis]/ 255.0)
+
+class_names = ["t-shirt","trouser","pullover","dress","coat","sandal","shirt","sneaker","bag","ankle boot"]
+
+TEMPLATES = ["a photo of a {}","this picture shows a {}","an image containing a {}","a small picture of a {}","here is a {}"]
+
+def make_caption(label):
+    name = class_names[label]
+    if name[0] in "aeiou":
+        article = "an"
+    else:
+        article = "a"
+    template = random.choice(TEMPLATES)
+    caption = template.format(name)
+    return "startseq " + caption + " endseq"
+
+N_TRAIN = 4000
+N_TEST = 500
+
+train_idx = np.random.choice(len(x_train),N_TRAIN,replace=False)
+test_idx = np.random.choice(len(x_test),N_TEST,replace=False)
+train_images = x_train[train_idx]
+train_captions = [make_caption(int(y_train[i]))for i in train_idx]
+
+test_images = x_test[test_idx]
+test_captions = [make_caption(int(y_test[i]))for i in test_idx]
+
+print("Example captions:")
+print(train_captions[:5])
+
+tokenizer = Tokenizer(oov_token="<unk>")
+tokenizer.fit_on_texts(train_captions)
+
+vocab_size = (len(tokenizer.word_index) + 1)
+
+max_len = max(len(caption.split())for caption in train_captions)
+
+print("Vocabulary size:", vocab_size)
+print("Maximum length:", max_len)
+
+train_seqs = tokenizer.texts_to_sequences(train_captions)
+
+test_seqs = tokenizer.texts_to_sequences(test_captions)
+
+def build_sequences(images, sequences):
+    X_img = []
+    X_seq = []
+    y = []
+
+    for img, seq in zip(images, sequences):
+        for t in range(1, len(seq)):
+            input_seq = seq[:t]
+            output_word = seq[t]
+            input_seq = pad_sequences([input_seq],maxlen=max_len)[0]
+            X_img.append(img)
+            X_seq.append(input_seq)
+            y.append(output_word)
+    return (np.array(X_img),np.array(X_seq),to_categorical(y,num_classes=vocab_size))
+
+X_img_train, X_seq_train, y_train_cap = build_sequences(train_images,train_seqs)
+
+print("Training pairs:",X_img_train.shape[0])
+
+EMBED_DIM = 128
+image_input = Input(shape=(28, 28, 1),name="image_input")
+
+cnn = Conv2D(32,(3, 3),activation="relu",padding="same")(image_input)
+cnn = MaxPooling2D()(cnn)
+cnn = Conv2D(64,(3, 3),activation="relu",padding="same")(cnn)
+cnn = MaxPooling2D()(cnn)
+cnn = GlobalAveragePooling2D()(cnn)
+
+image_features = Dense(EMBED_DIM,activation="relu")(cnn)
+image_features = Dropout(0.3)(image_features)
+
+seq_input = Input(shape=(max_len,),name="caption_input")
+seq_embed = Embedding(vocab_size,EMBED_DIM,mask_zero=True)(seq_input)
+seq_embed = Dropout(0.3)(seq_embed)
+seq_features = LSTM(EMBED_DIM)(seq_embed)
+
+merged = Add()([image_features,seq_features])
+merged = Dense(EMBED_DIM,activation="relu")(merged)
+
+output = Dense(vocab_size,activation="softmax")(merged)
+
+caption_model = Model(inputs=[image_input,seq_input],outputs=output)
+
+caption_model.compile(optimizer="adam",loss="categorical_crossentropy",metrics=["accuracy"])
+caption_model.summary()
+
+history = caption_model.fit([X_img_train, X_seq_train],y_train_cap,epochs=10,batch_size=64,validation_split=0.1,verbose=1)
+
+plt.figure(figsize=(7, 4))
+plt.plot(history.history["loss"],label="Training Loss")
+plt.plot(history.history["val_loss"],label="Validation Loss")
+plt.title("CNN + LSTM Training Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Categorical Cross Entropy")
+plt.legend()
+plt.show()
+
+index_to_word = {idx: word for word, idx in tokenizer.word_index.items()}
+
+def generate_caption(image,max_length=max_len):
+    text = "startseq"
+    for _ in range(max_length):
+        seq = tokenizer.texts_to_sequences([text])[0]
+        seq = pad_sequences([seq],maxlen=max_length)
+        prediction = caption_model.predict([np.expand_dims(image, 0),seq],verbose=0)
+        next_index = int(np.argmax(prediction))
+        next_word = index_to_word.get(next_index,"")
+
+        if (next_word == ""or next_word == "endseq"):
+            break
+        text += " " + next_word
+    return text.replace("startseq","").strip()
+plt.figure(figsize=(12, 8))
+
+sample_indices = np.random.choice(len(test_images),6,replace=False)
+
+for i, idx in enumerate(sample_indices):
+    plt.subplot(2, 3, i + 1)
+    img = test_images[idx]
+    true_label = class_names[int(y_test[test_idx[idx]])]
+    predicted_caption = generate_caption(img)
+    plt.imshow(img.squeeze(),cmap="gray")
+    plt.title(f"True: {true_label}\n"f"Generated: {predicted_caption}",fontsize=9)
+    plt.axis("off")
+plt.tight_layout()
+plt.show()
+
+print("Generated Caption:",generate_caption(test_images[0]))
+
+========================================================================
+PROGRAM 3: VARIATIONAL AUTOENCODER (VAE) USING PYTORCH AND MNIST
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+
+torch.manual_seed(42)
+np.random.seed(42)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
+os.makedirs("outputs", exist_ok=True)
+
+ORIGINAL_DIM = 784
+LATENT_DIM = 2
+BATCH_SIZE = 128
+EPOCHS = 10
+
+transform = transforms.Compose([transforms.ToTensor(),transforms.Lambda(lambda image: image.view(-1))])
+
+train_dataset = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
+test_dataset = datasets.MNIST(root="./data", train=False, download=True, transform=transform)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+class VAE(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.enc1 = nn.Linear(ORIGINAL_DIM, 256)
+        self.enc2 = nn.Linear(256, 64)
+        self.fc_mean = nn.Linear(64, LATENT_DIM)
+        self.fc_logvar = nn.Linear(64, LATENT_DIM)
+        self.dec1 = nn.Linear(LATENT_DIM, 64)
+        self.dec2 = nn.Linear(64, 256)
+        self.dec_out = nn.Linear(256, ORIGINAL_DIM)
+
+    def encode(self, x):
+        h = F.relu(self.enc1(x))
+        h = F.relu(self.enc2(h))
+        return self.fc_mean(h), self.fc_logvar(h)
+
+    def reparameterize(self, mean, logvar):
+        std = torch.exp(0.5 * logvar)
+        epsilon = torch.randn_like(std)
+        return mean + std * epsilon
+
+    def decode(self, z):
+        h = F.relu(self.dec1(z))
+        h = F.relu(self.dec2(h))
+        return torch.sigmoid(self.dec_out(h))
+
+    def forward(self, x):
+        mean, logvar = self.encode(x)
+        z = self.reparameterize(mean, logvar)
+        return self.decode(z), mean, logvar
+
+def vae_loss(reconstruction, x, mean, logvar):
+    reconstruction_loss = F.binary_cross_entropy(reconstruction, x, reduction="sum")
+    kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+    return reconstruction_loss + kl_loss
+
+model = VAE().to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+for epoch in range(EPOCHS):
+    model.train()
+    total_loss = 0.0
+    for x, _ in train_loader:
+        x = x.to(device)
+        optimizer.zero_grad()
+        reconstruction, mean, logvar = model(x)
+        loss = vae_loss(reconstruction, x, mean, logvar)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+
+    print(f"Epoch {epoch + 1}/{EPOCHS}, "f"loss per image: {total_loss / len(train_dataset):.4f}")
+
+torch.save(model.state_dict(), "outputs/vae_mnist.pth")
+print("Saved model: outputs/vae_mnist.pth")
+
+model.eval()
+with torch.no_grad():
+    x, _ = next(iter(test_loader))
+    x = x.to(device)
+    reconstruction, _, _ = model(x)
+
+original_images = x[:5].cpu().numpy().reshape(-1, 28, 28)
+reconstructed_images = reconstruction[:5].cpu().numpy().reshape(-1, 28, 28)
+
+plt.figure(figsize=(10, 4))
+for i in range(5):
+    plt.subplot(2, 5, i + 1)
+    plt.imshow(original_images[i], cmap="gray")
+    plt.title("Original")
+    plt.axis("off")
+    plt.subplot(2, 5, i + 6)
+    plt.imshow(reconstructed_images[i], cmap="gray")
+    plt.title("Reconstructed")
+    plt.axis("off")
+plt.tight_layout()
+plt.savefig("outputs/vae_reconstruction.png", dpi=150)
+plt.show()
+
+n = 10
+grid = np.zeros((28 * n, 28 * n), dtype=np.float32)
+grid_x = np.linspace(-3, 3, n)
+grid_y = np.linspace(3, -3, n)
+
+with torch.no_grad():
+    for i, y_value in enumerate(grid_y):
+        for j, x_value in enumerate(grid_x):
+            z = torch.tensor([[x_value, y_value]], dtype=torch.float32, device=device)
+            digit = model.decode(z)[0].cpu().numpy().reshape(28, 28)
+            grid[i * 28:(i + 1) * 28, j * 28:(j + 1) * 28] = digit
+
+plt.figure(figsize=(8, 8))
+plt.imshow(grid, cmap="gray")
+plt.title("VAE Generated Digits")
+plt.axis("off")
+plt.tight_layout()
+plt.savefig("outputs/vae_generated_digits.png", dpi=150)
+plt.show()
+print("Saved plots in the outputs folder.")
+========================================================================
+
+PROGRAM 3: AUTOENCODER USING KERAS AND MNIST
+
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.datasets import mnist
+from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.models import Model
+
+(x_train, _), (x_test, _) = mnist.load_data()
+
+x_train = x_train.astype("float32").reshape(-1, 784) / 255.0
+x_test = x_test.astype("float32").reshape(-1, 784) / 255.0
+
+input_layer = Input(shape=(784,))
+encoded = Dense(128, activation="relu")(input_layer)
+encoded = Dense(64, activation="relu")(encoded)
+latent = Dense(32, activation="relu", name="latent_space")(encoded)
+
+decoded = Dense(64, activation="relu")(latent)
+decoded = Dense(128, activation="relu")(decoded)
+decoded = Dense(784, activation="sigmoid")(decoded)
+
+autoencoder = Model(input_layer, decoded)
+autoencoder.compile(optimizer="adam", loss="binary_crossentropy")
+autoencoder.summary()
+
+autoencoder.fit(x_train, x_train,epochs=5,batch_size=256,validation_split=0.1,shuffle=True,verbose=1)
+
+encoder = Model(input_layer, latent)
+features = encoder.predict(x_test[:10], verbose=0)
+print("Compressed feature shape:", features.shape)
+
+reconstructed = autoencoder.predict(x_test[:10], verbose=0)
+
+plt.figure(figsize=(12, 4))
+for i in range(5):
+    plt.subplot(2, 5, i + 1)
+    plt.imshow(x_test[i].reshape(28, 28), cmap="gray")
+    plt.title("Original")
+    plt.axis("off")
+    plt.subplot(2, 5, i + 6)
+    plt.imshow(reconstructed[i].reshape(28, 28), cmap="gray")
+    plt.title("Reconstructed")
+    plt.axis("off")
+
+plt.tight_layout()
+plt.savefig("mnist_autoencoder_reconstruction.png", dpi=150)
+plt.show()
+========================================================================
+PROGRAM 4: Q-LEARNING IN A GRIDWORLD MAZE
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+MAZE = [
+    "S.#.....",
+    ".##.###.",
+    "....#...",
+    ".####.#.",
+    "......#.",
+    ".####.#G",
+    "....#...",
+    "###...#."
+]
+ACTIONS = ["UP", "DOWN", "LEFT", "RIGHT"]
+DELTAS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+ARROWS = ["↑", "↓", "←", "→"]
+
+ALPHA = 0.1
+GAMMA = 0.95
+EPS_START = 1.0
+EPS_END = 0.01
+EPS_DECAY = 0.995
+EPISODES = 2000
+MAX_STEPS = 200
+R_GOAL = 100
+R_STEP = -1
+R_WALL = -5
+
+rng = np.random.default_rng(42)
+class MazeEnv:
+    def __init__(self, layout):
+        self.grid = np.array([list(row) for row in layout])
+        self.n_rows, self.n_cols = self.grid.shape
+        starts = np.argwhere(self.grid == "S")
+        goals = np.argwhere(self.grid == "G")
+        if len(starts) != 1 or len(goals) != 1:
+            raise ValueError("Maze must contain exactly one S and one G.")
+        self.start = tuple(starts[0])
+        self.goal = tuple(goals[0])
+        self.pos = self.start
+
+    def reset(self):
+        self.pos = self.start
+        return self.pos
+
+    def step(self, action):
+        dr, dc = DELTAS[action]
+        r, c = self.pos[0] + dr, self.pos[1] + dc
+        if (r < 0 or r >= self.n_rows or c < 0 or c >= self.n_cols or self.grid[r, c] == "#"):
+            return self.pos, R_WALL, False
+        self.pos = (r, c)
+        if self.pos == self.goal:
+            return self.pos, R_GOAL, True
+        return self.pos, R_STEP, False
+
+def choose_action(Q, state, epsilon):
+    if rng.random() < epsilon:
+        return int(rng.integers(len(ACTIONS)))
+    best = np.flatnonzero(Q[state] == np.max(Q[state]))
+    return int(rng.choice(best))
+
+def train(env):
+    Q = np.zeros((env.n_rows, env.n_cols, len(ACTIONS)), dtype=np.float32)
+    epsilon = EPS_START
+    rewards, steps_list = [], []
+    for episode in range(EPISODES):
+        state = env.reset()
+        total_reward = 0
+        done = False
+        steps = 0
+        while not done and steps < MAX_STEPS:
+            action = choose_action(Q, state, epsilon)
+            next_state, reward, done = env.step(action)
+            best_next = 0.0 if done else np.max(Q[next_state])
+            target = reward + GAMMA * best_next
+            Q[state][action] += ALPHA * (target - Q[state][action])
+            state = next_state
+            total_reward += reward
+            steps += 1
+        epsilon = max(EPS_END, epsilon * EPS_DECAY)
+        rewards.append(total_reward)
+        steps_list.append(steps)
+		
+        if (episode + 1) % 200 == 0:
+            print(f"Episode {episode + 1}, "f"average reward: {np.mean(rewards[-200:]):.2f}")
+    return Q, rewards, steps_list
+
+def greedy_path(env, Q):
+    state = env.reset()
+    path = [state]
+    visited = {state}
+
+    for _ in range(env.n_rows * env.n_cols * 4):
+        action_order = np.argsort(Q[state])[::-1]
+        next_state = state
+        done = False
+
+        for action in action_order:
+            candidate, _, candidate_done = env.step(int(action))
+            if candidate_done or candidate != state and candidate not in visited:
+                next_state, done = candidate, candidate_done
+                break
+            env.pos = state
+
+        if next_state == state:
+            return path, False
+        path.append(next_state)
+        if done:
+            return path, True
+        visited.add(next_state)
+        state = next_state
+
+    return path, False
+
+def plot_results(env, Q, rewards, steps, path, reached):
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    axes[0].plot(rewards, alpha=0.5)
+    axes[0].set_title("Reward per Episode")
+    axes[0].set_xlabel("Episode")
+    axes[0].set_ylabel("Reward")
+
+    axes[1].plot(steps, alpha=0.5)
+    axes[1].set_title("Steps per Episode")
+    axes[1].set_xlabel("Episode")
+    axes[1].set_ylabel("Steps")
+
+    ax = axes[2]
+    image = np.zeros((env.n_rows, env.n_cols))
+    image[env.grid == "#"] = 1
+    ax.imshow(image, cmap="Greys")
+    for r in range(env.n_rows):
+        for c in range(env.n_cols):
+            if env.grid[r, c] == "#":
+                continue
+            if (r, c) == env.start:
+                label, color = "S", "green"
+            elif (r, c) == env.goal:
+                label, color = "G", "red"
+            else:
+                label, color = ARROWS[int(np.argmax(Q[r, c]))], "blue"
+            ax.text(c, r, label, ha="center", va="center", color=color, fontsize=12)
+
+    if path:
+        ys, xs = zip(*path)
+        ax.plot(xs, ys, "o-", label="Learned path")
+        ax.legend()
+    ax.set_title(f"Learned Policy (goal reached: {reached})")
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == "__main__":
+    env = MazeEnv(MAZE)
+    Q, rewards, steps = train(env)
+    path, reached = greedy_path(env, Q)
+    print("\\nGoal reached:", reached)
+    print("Path length:", len(path) - 1)
+    print("Path:", path)
+    plot_results(env, Q, rewards, steps, path, reached)
+========================================================================
+
+
